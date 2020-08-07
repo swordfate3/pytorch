@@ -18,7 +18,10 @@ from torch.testing._internal.common_utils import TestCase
 from torch.quantization import QuantWrapper, QuantStub, DeQuantStub, \
     default_qconfig, default_dynamic_qconfig, default_per_channel_qconfig, QConfig, default_observer, default_weight_observer, \
     propagate_qconfig_, convert, get_default_qconfig, quantize_dynamic_jit, quantize_jit
-from torch.quantization.default_mappings import DEFAULT_DYNAMIC_MODULE_MAPPING
+from torch.quantization.default_mappings import (
+    DEFAULT_DYNAMIC_MODULE_MAPPING,
+    DEFAULT_QCONFIG_PROPAGATE_WHITE_LIST,
+)
 import unittest
 from torch.testing import FileCheck
 
@@ -182,12 +185,15 @@ class QuantizationTestCase(TestCase):
         self.assertTrue(hasattr(module, 'quant'))
         self.assertTrue(hasattr(module, 'dequant'))
 
-    def checkObservers(self, module):
+    def checkObservers(self, module, propagate_qconfig_list=None):
         r"""Checks the module or module's leaf descendants
             have observers in preperation for quantization
         """
+        if propagate_qconfig_list is None:
+            propagate_qconfig_list = DEFAULT_QCONFIG_PROPAGATE_WHITE_LIST
         if hasattr(module, 'qconfig') and module.qconfig is not None and \
-           len(module._modules) == 0 and not isinstance(module, torch.nn.Sequential):
+           len(module._modules) == 0 and not isinstance(module, torch.nn.Sequential) \
+           and type(module) in propagate_qconfig_list:
             self.assertTrue(hasattr(module, 'activation_post_process'),
                             'module: ' + str(type(module)) + ' do not have observer')
         for child in module.children():
