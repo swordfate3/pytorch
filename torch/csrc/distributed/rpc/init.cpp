@@ -500,6 +500,23 @@ PyObject* rpc_init(PyObject* /* unused */) {
               The number of threads in the thread-pool used by
               :class:`~torch.distributed.rpc.TensorPipeAgent` to execute
               requests.
+          )")
+      .def_readwrite(
+          "map_locations",
+          &TensorPipeRpcBackendOptions::mapLocations,
+          R"(The device map locations.)")
+      .def(
+          "set_map_location",
+          &TensorPipeRpcBackendOptions::setMapLocation,
+          R"(
+              Set device mapping between each RPC caller and callee pairs. This
+              function can be called multiple times to incrementally update
+              device placement configurations.
+
+              Arguments:
+                  worker_name (str): Callee name.
+                  map_location (Dict[int, int]): Device placment mappings from
+                  this worker to the callee. This map must be invertible.
           )");
 
   module.attr("_DEFAULT_NUM_WORKER_THREADS") =
@@ -542,7 +559,11 @@ PyObject* rpc_init(PyObject* /* unused */) {
           "get_worker_infos",
           (std::vector<WorkerInfo>(TensorPipeAgent::*)() const) &
               TensorPipeAgent::getWorkerInfos,
-          py::call_guard<py::gil_scoped_release>());
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_set_reverse_map_locations",
+          // intentionally not releasing GIL
+          &TensorPipeAgent::setReverseMapLocations);
 
   module.def("_is_current_rpc_agent_set", &RpcAgent::isCurrentRpcAgentSet);
 
@@ -751,9 +772,7 @@ PyObject* rpc_init(PyObject* /* unused */) {
             applications responsibility to make sure that the above assumption
             always holds.
       )");
-  module.def(
-      "_disable_jit_rref_pickle",
-      &disableJitRRefPickle);
+  module.def("_disable_jit_rref_pickle", &disableJitRRefPickle);
 
   Py_RETURN_TRUE;
 }

@@ -15,11 +15,15 @@ if is_available() and not torch._C._rpc_init():
     raise RuntimeError("Failed to initialize torch.distributed.rpc")
 
 
+
+
 if is_available():
     from . import api, backend_registry, functions, _set_profiler_node_id
     from . import (
-        _enable_jit_rref_pickle,
         _disable_jit_rref_pickle,
+        _enable_jit_rref_pickle,
+        _get_current_rpc_agent,
+        TensorPipeAgent,
     )  # noqa: F401
     from .api import *  # noqa: F401
     from .backend_registry import BackendType
@@ -27,6 +31,7 @@ if is_available():
         _server_process_global_profile,
     )
     import torch.distributed.autograd as dist_autograd
+
 
     def init_rpc(
         name,
@@ -92,6 +97,16 @@ if is_available():
         _set_profiler_node_id(rank)
         # Initialize RPC.
         api._init_rpc_backend(backend, store, name, rank, world_size, rpc_backend_options)
+
+        # NB: have to compared .name field here as backend registry can
+        # dynamically modify BackendType object.
+        # Hence, backend == BackendType.TENSORPIPE does not always work.
+        if backend.name == BackendType.TENSORPIPE.name:
+            try:
+                api._setup_map_locations(rpc_backend_options.map_locations)
+            except Exception:
+                api.shutdown()
+                raise
 
 
     @api._require_initialized

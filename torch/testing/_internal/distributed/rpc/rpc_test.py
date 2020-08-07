@@ -2514,38 +2514,6 @@ class RpcTest(RpcAgentTestFixture):
     def _gpu_tensor_list_arg(tensor_list):
         return torch.rand(3, 3)
 
-    @skip_if_lt_x_gpu(2)
-    @dist_init
-    def test_cuda(self):
-        dst = worker_name((self.rank + 1) % self.world_size)
-        t1 = torch.rand(3, 3).cuda(0)
-        t2 = torch.rand(3, 3).cuda(1)
-        t3 = torch.rand(3, 3)
-
-        # cuda tensors as args fail.
-        with self.assertRaisesRegex(RuntimeError, "RPC backend only supports CPU tensors.*Found tensor on device: cuda:0"):
-            rpc.rpc_sync(dst, torch.add, args=(t1, t2))
-
-        # mix of cpu and cuda tensors as args fail.
-        with self.assertRaisesRegex(RuntimeError, "RPC backend only supports CPU tensors.*Found tensor on device: cuda:0"):
-            rpc.rpc_sync(dst, torch.add, args=(t1, t3))
-
-        # gpu tensor list as args fails.
-        with self.assertRaisesRegex(RuntimeError, "RPC backend only supports CPU tensors.*Found tensor on device: cuda:0"):
-            rpc.rpc_sync(dst, RpcTest._gpu_tensor_list_arg, args=([t1, t2]))
-
-        # cuda tensors as return values fail.
-        with self.assertRaisesRegex(RuntimeError, "RPC backend only supports CPU tensors.*Found tensor on device: cuda:0"):
-            rpc.rpc_sync(dst, RpcTest._return_gpu_tensor, args=())
-
-        # cuda tensors as a list of return value fails
-        with self.assertRaisesRegex(RuntimeError, "RPC backend only supports CPU tensors.*Found tensor on device: cuda:0"):
-            rpc.rpc_sync(dst, RpcTest._return_gpu_tensor_list, args=())
-
-        # Sending to self should fail too.
-        with self.assertRaisesRegex(RuntimeError, "RPC backend only supports CPU tensors.*Found tensor on device: cuda:0"):
-            rpc.rpc_sync(worker_name(self.rank), torch.add, args=(t1, t2))
-
     def _create_rref(self):
         owner_rank = (self.rank + 2) % self.world_size
         return rpc.remote(
@@ -3123,6 +3091,39 @@ class RpcTest(RpcAgentTestFixture):
 
 
 class ProcessGroupAgentRpcTest(RpcAgentTestFixture):
+
+    @skip_if_lt_x_gpu(2)
+    @dist_init
+    def test_cuda(self):
+        dst = worker_name((self.rank + 1) % self.world_size)
+        t1 = torch.rand(3, 3).cuda(0)
+        t2 = torch.rand(3, 3).cuda(1)
+        t3 = torch.rand(3, 3)
+
+        # cuda tensors as args fail.
+        with self.assertRaisesRegex(RuntimeError, "RPC backend only supports CPU tensors.*Found tensor on device: cuda:0"):
+            rpc.rpc_sync(dst, torch.add, args=(t1, t2))
+
+        # mix of cpu and cuda tensors as args fail.
+        with self.assertRaisesRegex(RuntimeError, "RPC backend only supports CPU tensors.*Found tensor on device: cuda:0"):
+            rpc.rpc_sync(dst, torch.add, args=(t1, t3))
+
+        # gpu tensor list as args fails.
+        with self.assertRaisesRegex(RuntimeError, "RPC backend only supports CPU tensors.*Found tensor on device: cuda:0"):
+            rpc.rpc_sync(dst, RpcTest._gpu_tensor_list_arg, args=([t1, t2]))
+
+        # cuda tensors as return values fail.
+        with self.assertRaisesRegex(RuntimeError, "RPC backend only supports CPU tensors.*Found tensor on device: cuda:0"):
+            rpc.rpc_sync(dst, RpcTest._return_gpu_tensor, args=())
+
+        # cuda tensors as a list of return value fails
+        with self.assertRaisesRegex(RuntimeError, "RPC backend only supports CPU tensors.*Found tensor on device: cuda:0"):
+            rpc.rpc_sync(dst, RpcTest._return_gpu_tensor_list, args=())
+
+        # Sending to self should fail too.
+        with self.assertRaisesRegex(RuntimeError, "RPC backend only supports CPU tensors.*Found tensor on device: cuda:0"):
+            rpc.rpc_sync(worker_name(self.rank), torch.add, args=(t1, t2))
+
 
     def test_single_threaded_rref_owner(self):
         # We need a process group in order to perform a barrier at the end.
@@ -3739,3 +3740,235 @@ class TensorPipeAgentRpcTest(RpcAgentTestFixture):
                 num_worker_threads=self.rpc_backend_options.num_worker_threads,
                 rpc_timeout=timeout,
             )
+
+    def _test_map_locations(self, options, errMsg="Invalid map_location"):
+        with self.assertRaisesRegex(ValueError, errMsg):
+            rpc.init_rpc(
+                name=worker_name(self.rank),
+                backend=self.rpc_backend,
+                rank=self.rank,
+                world_size=self.world_size,
+                rpc_backend_options=options,
+            )
+
+        self.assertFalse(rpc.api._is_current_rpc_agent_set())
+
+    @skip_if_lt_x_gpu(1)
+    def test_map_locations_wrong_worker_name(self):
+        options = self.rpc_backend_options
+        options.set_map_location("none_exist", {-1: 0})
+        self._test_map_locations(options, "Wrong worker names")
+
+    def test_map_locations_invalid_max_local_device(self):
+        options = self.rpc_backend_options
+        dst = worker_name((self.rank + 1) % self.world_size)
+        options.set_map_location(dst, {torch.cuda.device_count(): -1})
+
+        self._test_map_locations(options)
+
+    @skip_if_lt_x_gpu(1)
+    def test_map_locations_invalid_min_local_device(self):
+        options = self.rpc_backend_options
+        dst = worker_name((self.rank + 1) % self.world_size)
+        options.set_map_location(dst, {-2: 0})
+
+        self._test_map_locations(options)
+
+    @skip_if_lt_x_gpu(1)
+    def test_map_locations_invalid_min_remote_device(self):
+        options = self.rpc_backend_options
+        dst = worker_name((self.rank + 1) % self.world_size)
+        options.set_map_location(dst, {0: -2})
+
+        self._test_map_locations(options)
+
+    def test_map_locations_invalid_max_remote_device(self):
+        options = self.rpc_backend_options
+        dst = worker_name((self.rank + 1) % self.world_size)
+        options.set_map_location(dst, {-1: torch.cuda.device_count()})
+
+        self._test_map_locations(options)
+
+    @skip_if_lt_x_gpu(1)
+    def test_map_locations_many_to_one(self):
+        options = self.rpc_backend_options
+        dst = worker_name((self.rank + 1) % self.world_size)
+        options.set_map_location(dst, {-1: 0})
+        options.set_map_location(dst, {0: 0})
+
+        self._test_map_locations(options)
+
+    @skip_if_lt_x_gpu(1)
+    def test_map_locations_ambiguous_cpu(self):
+        options = self.rpc_backend_options
+        dst = worker_name((self.rank + 1) % self.world_size)
+        options.set_map_location(dst, {0: -1})
+
+        self._test_map_locations(options, "device mapping for CPU.*ambiguous")
+
+    def test_map_locations_cpu(self):
+        options = self.rpc_backend_options
+        dst = worker_name((self.rank + 1) % self.world_size)
+        options.set_map_location(dst, {-1: -1})
+
+        rpc.init_rpc(
+            name=worker_name(self.rank),
+            backend=self.rpc_backend,
+            rank=self.rank,
+            world_size=self.world_size,
+            rpc_backend_options=options,
+        )
+
+        ret = rpc.rpc_sync(dst, torch.add, args=(torch.zeros(2), torch.ones(2)))
+        self.assertEqual(ret, torch.zeros(2) + torch.ones(2))
+
+        rpc.shutdown()
+
+    @staticmethod
+    def _gpu_add(x, y):
+        if all([x.is_cuda, x.device.index == 0, y.is_cuda, y.device.index == 0]):
+            return (x + y).to(1)
+        else:
+            raise ValueError("Wrong device affinity")
+
+    @skip_if_lt_x_gpu(2)
+    def test_map_locations_gpu(self):
+        options = self.rpc_backend_options
+        dst = worker_name((self.rank + 1) % self.world_size)
+        options.set_map_location(dst, {-1: 0})
+        options.set_map_location(dst, {0: 1})
+
+        rpc.init_rpc(
+            name=worker_name(self.rank),
+            backend=self.rpc_backend,
+            rank=self.rank,
+            world_size=self.world_size,
+            rpc_backend_options=options,
+        )
+
+        fn = TensorPipeAgentRpcTest._gpu_add
+        ret = rpc.rpc_sync(dst, fn, args=(torch.zeros(2), torch.ones(2)))
+        self.assertEqual(ret, (torch.zeros(2) + torch.ones(2)).to(0))
+        rpc.shutdown()
+
+    @staticmethod
+    def _gpu_add_multi_gpu(x, y):
+        if all([x.is_cuda, x.device.index == 0, y.is_cuda, y.device.index == 1]):
+            return x + y.to(0), x.to(1) - y
+        else:
+            raise ValueError("Wrong device affinity")
+
+    @skip_if_lt_x_gpu(2)
+    def test_map_locations_multi_gpu(self):
+        options = self.rpc_backend_options
+        dst = worker_name((self.rank + 1) % self.world_size)
+        options.set_map_location(dst, {-1: 0})
+        options.set_map_location(dst, {0: 1})
+
+        rpc.init_rpc(
+            name=worker_name(self.rank),
+            backend=self.rpc_backend,
+            rank=self.rank,
+            world_size=self.world_size,
+            rpc_backend_options=options,
+        )
+
+        fn = TensorPipeAgentRpcTest._gpu_add_multi_gpu
+        ret = rpc.rpc_sync(dst, fn, args=(torch.zeros(2), torch.ones(2).to(0)))
+        self.assertEqual(ret[0], torch.zeros(2) + torch.ones(2))
+        self.assertEqual(ret[1], (torch.zeros(2) - torch.ones(2)).to(0))
+        rpc.shutdown()
+
+    @staticmethod
+    def _gpu_add_default_cpu(x, y):
+        if all([x.device.type == 'cpu', y.is_cuda, y.device.index == 1]):
+            return x.to(1) + y
+        else:
+            raise ValueError("Wrong device affinity")
+
+    @skip_if_lt_x_gpu(2)
+    def test_map_locations_default_cpu(self):
+        options = self.rpc_backend_options
+        dst = worker_name((self.rank + 1) % self.world_size)
+        options.set_map_location(dst, {0: 1})
+
+        rpc.init_rpc(
+            name=worker_name(self.rank),
+            backend=self.rpc_backend,
+            rank=self.rank,
+            world_size=self.world_size,
+            rpc_backend_options=options,
+        )
+
+        fn = TensorPipeAgentRpcTest._gpu_add_default_cpu
+        ret = rpc.rpc_sync(dst, fn, args=(torch.zeros(2), torch.ones(2).to(0)))
+        self.assertEqual(ret, (torch.zeros(2) + torch.ones(2)).to(0))
+        rpc.shutdown()
+
+    @staticmethod
+    def _add_to_gpu(x, y):
+        return (x + y).to(0)
+
+    def _test_map_locations_missing_config(self, mode):
+        dst = worker_name((self.rank + 1) % self.world_size)
+        errMsg = (
+            "TensorPipe RPC backend only supports CPU tensors by default.*"
+            "please move your tensors to CPU before sending them over RPC.*"
+            "or call `set_map_location` on `TensorPipeRpcBackendOptions`"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, errMsg):
+            if mode == RPCExecMode.SYNC:
+                rpc.rpc_sync(dst, torch.add, args=(torch.zeros(2).to(0), 1))
+            elif mode == RPCExecMode.REMOTE:
+                rpc.remote(dst, torch.add, args=(torch.zeros(2).to(0), 1)).to_here()
+            else:
+                raise ValueError(f"unexpected mode {mode}")
+
+        with self.assertRaisesRegex(RuntimeError, errMsg):
+            if mode == RPCExecMode.SYNC:
+                rpc.rpc_sync(
+                    dst,
+                    TensorPipeAgentRpcTest._add_to_gpu,
+                    args=(torch.zeros(2), 1)
+                )
+            elif mode == RPCExecMode.REMOTE:
+                rpc.remote(
+                    dst,
+                    TensorPipeAgentRpcTest._add_to_gpu,
+                    args=(torch.zeros(2), 1)
+                ).to_here()
+            else:
+                raise ValueError(f"unexpected mode {mode}")
+
+    @skip_if_lt_x_gpu(1)
+    @dist_init
+    def test_map_locations_missing_config(self):
+        self._test_map_locations_missing_config(RPCExecMode.SYNC)
+
+    @skip_if_lt_x_gpu(1)
+    @dist_init
+    def test_map_locations_missing_config_remote(self):
+        self._test_map_locations_missing_config(RPCExecMode.REMOTE)
+
+    @skip_if_lt_x_gpu(2)
+    def test_map_locations_remote(self):
+        options = self.rpc_backend_options
+        dst = worker_name((self.rank + 1) % self.world_size)
+        options.set_map_location(dst, {1: 0})
+
+        rpc.init_rpc(
+            name=worker_name(self.rank),
+            backend=self.rpc_backend,
+            rank=self.rank,
+            world_size=self.world_size,
+            rpc_backend_options=options,
+        )
+
+        rref = rpc.remote(
+            dst,
+            TensorPipeAgentRpcTest._add_to_gpu,
+            args=(torch.zeros(2), 1)
+        )
+
+        self.assertEqual(rref.to_here(), torch.ones(2).to(1))
